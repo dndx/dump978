@@ -1,6 +1,7 @@
 *~
 *.o
 dump978
+*.so
 extract_nexrad
 uat2esnt
 uat2json

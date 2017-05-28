@@ -24,16 +24,28 @@
 
 #include "uat.h"
 #include "fec.h"
+#include "dump978.h"
 
 static void make_atan2_table();
+#ifndef SHARED
 static void read_from_stdin();
+#endif
 static int check_sync_word(uint16_t *phi, uint64_t pattern, int16_t *center);
+#ifndef SHARED
 static int process_buffer(uint16_t *phi, int len, uint64_t offset);
+#else
+static int process_buffer(dump978_t *ctx, uint16_t *phi, int len, uint64_t offset);
+#endif
 static int demod_adsb_frame(uint16_t *phi, uint8_t *to, int *rs_errors);
 static int demod_uplink_frame(uint16_t *phi, uint8_t *to, int *rs_errors);
 static void demod_frame(uint16_t *phi, uint8_t *frame, int bytes, int16_t center_dphi);
+#ifndef SHARED
 static void handle_adsb_frame(uint64_t timestamp, uint8_t *frame, int rs);
 static void handle_uplink_frame(uint64_t timestamp, uint8_t *frame, int rs);
+#else
+static void handle_adsb_frame(dump978_t *ctx, uint64_t timestamp, uint8_t *frame, int rs);
+static void handle_uplink_frame(dump978_t *ctx, uint64_t timestamp, uint8_t *frame, int rs);
+#endif
 
 #define SYNC_BITS (36)
 #define ADSB_SYNC_WORD   0xEACDDA4E2UL
@@ -56,6 +68,7 @@ inline int16_t phi_difference(uint16_t from, uint16_t to)
 }
 #endif
 
+#ifndef SHARED
 int main(int argc, char **argv)
 {
     make_atan2_table();
@@ -63,7 +76,39 @@ int main(int argc, char **argv)
     read_from_stdin();
     return 0;
 }
+#else
+int dump978_init(dump978_t **ctx, dump978_on_frame_t cb, void *data)
+{
+    if (!cb) {
+        return -1;
+    }
 
+    dump978_t *tmp = malloc(sizeof(dump978_t));
+    if (!tmp) {
+        return -1;
+    }
+
+    tmp->on_frame = cb;
+    tmp->data = data;
+    tmp->used = 0;
+    tmp->offset = 0;
+
+    make_atan2_table();
+    init_fec();
+
+    *ctx = tmp;
+
+    return 0;
+}
+
+int dump978_destroy(dump978_t *ctx) {
+    free(ctx);
+
+    return 0;
+}
+#endif /* !SHARED */
+
+#ifndef SHARED
 static void dump_raw_message(char updown, uint8_t *data, int len, int rs_errors)
 {
     int i;
@@ -77,7 +122,9 @@ static void dump_raw_message(char updown, uint8_t *data, int len, int rs_errors)
         fprintf(stdout, ";rs=%d", rs_errors);
     fprintf(stdout, ";\n");
 }
+#endif
 
+#ifndef SHARED
 static void handle_adsb_frame(uint64_t timestamp, uint8_t *frame, int rs)
 {
     dump_raw_message('-', frame, (frame[0]>>3) == 0 ? SHORT_FRAME_DATA_BYTES : LONG_FRAME_DATA_BYTES, rs);
@@ -89,6 +136,17 @@ static void handle_uplink_frame(uint64_t timestamp, uint8_t *frame, int rs)
     dump_raw_message('+', frame, UPLINK_FRAME_DATA_BYTES, rs);
     fflush(stdout);
 }
+#else
+static void handle_adsb_frame(dump978_t *ctx, uint64_t timestamp, uint8_t *frame, int rs)
+{
+    ctx->on_frame(ctx->data, (frame[0]>>3) == 0 ? ADS_B_SHORT : ADS_B_LONG, frame, rs);
+}
+
+static void handle_uplink_frame(dump978_t *ctx, uint64_t timestamp, uint8_t *frame, int rs)
+{
+    ctx->on_frame(ctx->data, GROUND_UPLINK, frame, rs);
+}
+#endif /* !SHARED */
 
 static uint16_t iqphase[65536]; // contains value [0..65536) -> [0, 2*pi)
 
@@ -133,6 +191,7 @@ static void convert_to_phi(uint16_t *buffer, int n)
         buffer[i] = iqphase[buffer[i]];
 }
 
+#ifndef SHARED
 void read_from_stdin()
 {
     char buffer[65536*2];
@@ -154,6 +213,28 @@ void read_from_stdin()
         }
     }
 }
+#else
+move_t dump978_process(dump978_t *ctx, char *data, size_t len) {
+    int processed;
+    move_t move;
+
+    convert_to_phi((uint16_t*) (data + (ctx->used & ~1)), ((ctx->used & 1) + len) / 2);
+
+    ctx->used = len;
+    processed = process_buffer(ctx, (uint16_t*) data, ctx->used / 2, ctx->offset);
+    ctx->used -= processed * 2;
+    ctx->offset += processed;
+
+    if (ctx->used > 0) { // we have buffer remaining unused (confusing!)
+        move.start = processed * 2;
+        move.end = move.start + ctx->used;
+    } else {
+        move.start = move.end = 0;
+    }
+
+    return move;
+}
+#endif /* !SHARED */
 
 
 // Return 1 if word is "equal enough" to expected
@@ -271,7 +352,11 @@ int check_sync_word(uint16_t *phi, uint64_t pattern, int16_t *center)
 
 #define SYNC_MASK ((((uint64_t)1)<<SYNC_BITS)-1)
 
+#ifndef SHARED
 int process_buffer(uint16_t *phi, int len, uint64_t offset)    
+#else
+int process_buffer(dump978_t *ctx, uint16_t *phi, int len, uint64_t offset)    
+#endif
 {
     uint64_t sync0 = 0, sync1 = 0;
     int lenbits;
@@ -330,11 +415,19 @@ int process_buffer(uint16_t *phi, int len, uint64_t offset)
             skip_0 = demod_adsb_frame(phi+index, demod_buf_a, &rs_0);
             skip_1 = demod_adsb_frame(phi+index+1, demod_buf_b, &rs_1);
             if (skip_0 && rs_0 <= rs_1) {
+#ifndef SHARED
                 handle_adsb_frame(offset+index, demod_buf_a, rs_0);
+#else
+                handle_adsb_frame(ctx, offset+index, demod_buf_a, rs_0);
+#endif
                 bit = startbit + skip_0;
                 continue;
             } else if (skip_1 && rs_1 <= rs_0) {
+#ifndef SHARED
                 handle_adsb_frame(offset+index+1, demod_buf_b, rs_1);
+#else
+                handle_adsb_frame(ctx, offset+index+1, demod_buf_b, rs_1);
+#endif
                 bit = startbit + skip_1;
                 continue;
             } else {
@@ -354,11 +447,19 @@ int process_buffer(uint16_t *phi, int len, uint64_t offset)
             skip_0 = demod_uplink_frame(phi+index, demod_buf_a, &rs_0);
             skip_1 = demod_uplink_frame(phi+index+1, demod_buf_b, &rs_1);
             if (skip_0 && rs_0 <= rs_1) {
+#ifndef SHARED
                 handle_uplink_frame(offset+index, demod_buf_a, rs_0);
+#else
+                handle_uplink_frame(ctx, offset+index, demod_buf_a, rs_0);
+#endif
                 bit = startbit + skip_0;
                 continue;
             } else if (skip_1 && rs_1 <= rs_0) {
+#ifndef SHARED
                 handle_uplink_frame(offset+index+1, demod_buf_b, rs_1);
+#else
+                handle_uplink_frame(ctx, offset+index+1, demod_buf_b, rs_1);
+#endif
                 bit = startbit + skip_1;
                 continue;
             } else {
