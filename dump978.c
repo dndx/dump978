@@ -218,7 +218,7 @@ move_t dump978_process(dump978_t *ctx, char *data, size_t len) {
     int processed;
     move_t move;
 
-    convert_to_phi((uint16_t*) (data + (ctx->used & ~1)), ((ctx->used & 1) + len) / 2);
+    convert_to_phi((uint16_t*) (data + (ctx->used & ~1)), ((ctx->used & 1) + (len - ctx->used)) / 2);
 
     ctx->used = len;
     processed = process_buffer(ctx, (uint16_t*) data, ctx->used / 2, ctx->offset);
