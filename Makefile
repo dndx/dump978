@@ -34,7 +34,7 @@ test: fec_tests
 	./fec_tests
 
 install: libdump978.so
-	cp -f libdump978.so /usr/lib/
+	cp -f libdump978.so /usr/local/lib/
 
 clean:
 	rm -f *~ *.o fec/*.o dump978 uat2json uat2text uat2esnt fec_tests libdump978.so extract_nexrad
